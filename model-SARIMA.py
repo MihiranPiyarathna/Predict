@@ -1,11 +1,11 @@
 """
-SARIMA model trained on monthly sales data stored in Excel.
+Per-item SARIMA forecasts trained on monthly sales data stored in Excel.
 The workbook need to contain at least these columns:
-Year, Month, and SaleQty.
+ItmKy, Year, Month, and SaleQty.
 
-The script aggregates all item rows into a single monthly sales
-series, fits a small SARIMA model search, and prints a forecast for the next
-few months.
+The script fits a forecast for each item key. Items with enough history use a
+small SARIMA model search; sparse items fall back to a simple baseline so the
+output still covers every item key.
 """
 
 from __future__ import annotations
@@ -28,16 +28,28 @@ class SarimaResult:
 	model_fit: object
 
 
-def load_monthly_sales_series(
+@dataclass(frozen=True)
+class ItemForecast:
+	item_key: int
+	item_code: str | None
+	item_name: str | None
+	method: str
+	order: tuple[int, int, int] | None
+	seasonal_order: tuple[int, int, int, int] | None
+	aic: float | None
+	series: pd.Series
+	forecast: pd.DataFrame
+
+
+def load_sales_data(
 	excel_path: Path,
 	sheet_name: str | int = 0,
-	trim_trailing_zeros: bool = True,
-) -> tuple[pd.Series, int]:
-	"""Load and aggregate sales into a monthly time series."""
+) -> pd.DataFrame:
+	"""Load workbook data and validate the expected columns."""
 
 	data = pd.read_excel(excel_path, sheet_name=sheet_name)
 
-	required_columns = {"Year", "Month", "SaleQty"}
+	required_columns = {"ItmKy", "Year", "Month", "SaleQty"}
 	missing_columns = required_columns.difference(data.columns)
 	if missing_columns:
 		raise ValueError(
@@ -45,27 +57,42 @@ def load_monthly_sales_series(
 			f"Found columns: {', '.join(map(str, data.columns))}"
 		)
 
-	monthly = data.loc[:, ["Year", "Month", "SaleQty"]].copy()
-	monthly["Year"] = pd.to_numeric(monthly["Year"], errors="coerce")
-	monthly["Month"] = pd.to_numeric(monthly["Month"], errors="coerce")
-	monthly["SaleQty"] = pd.to_numeric(monthly["SaleQty"], errors="coerce").fillna(0.0)
-	monthly = monthly.dropna(subset=["Year", "Month"])
+	data = data.copy()
+	data["ItmKy"] = pd.to_numeric(data["ItmKy"], errors="coerce")
+	data["Year"] = pd.to_numeric(data["Year"], errors="coerce")
+	data["Month"] = pd.to_numeric(data["Month"], errors="coerce")
+	data["SaleQty"] = pd.to_numeric(data["SaleQty"], errors="coerce").fillna(0.0)
+	data = data.dropna(subset=["ItmKy", "Year", "Month"])
+	data["ItmKy"] = data["ItmKy"].astype(int)
+	data["Year"] = data["Year"].astype(int)
+	data["Month"] = data["Month"].astype(int)
+	return data
 
-	monthly["Year"] = monthly["Year"].astype(int)
-	monthly["Month"] = monthly["Month"].astype(int)
-	monthly["Date"] = pd.to_datetime(
-		dict(year=monthly["Year"], month=monthly["Month"], day=1), errors="coerce"
+
+def load_item_sales_series(
+	data: pd.DataFrame,
+	item_key: int,
+	trim_trailing_zeros: bool = True,
+) -> tuple[pd.Series, int, pd.Series]:
+	"""Build a monthly sales series for a single item key."""
+
+	item_rows = data.loc[data["ItmKy"] == item_key].copy()
+	if item_rows.empty:
+		raise ValueError(f"No rows found for item key {item_key}.")
+
+	item_rows["Date"] = pd.to_datetime(
+		dict(year=item_rows["Year"], month=item_rows["Month"], day=1), errors="coerce"
 	)
-	monthly = monthly.dropna(subset=["Date"])
-
-	series = monthly.groupby("Date", as_index=True)["SaleQty"].sum().sort_index()
+	item_rows = item_rows.dropna(subset=["Date"])
+	series = item_rows.groupby("Date", as_index=True)["SaleQty"].sum().sort_index()
 	if series.empty:
-		raise ValueError("No monthly sales values were found in the workbook.")
+		raise ValueError(f"No monthly sales values were found for item key {item_key}.")
 
 	full_index = pd.date_range(series.index.min(), series.index.max(), freq="MS")
 	series = series.reindex(full_index, fill_value=0.0)
 	series.index.name = "Month"
 	series = series.astype(float)
+	original_series = series.copy()
 
 	trimmed_months = 0
 	if trim_trailing_zeros and series.ne(0).any():
@@ -73,7 +100,7 @@ def load_monthly_sales_series(
 		trimmed_months = len(series) - (last_active_position + 1)
 		series = series.iloc[: last_active_position + 1]
 
-	return series, trimmed_months
+	return series, trimmed_months, original_series
 
 
 def seasonal_period_for_history(history_length: int, requested_period: int | None = None) -> int:
@@ -142,6 +169,23 @@ def fit_best_sarima(series: pd.Series, seasonal_period: int) -> SarimaResult:
 	return best_result
 
 
+def forecast_naive(series: pd.Series, periods: int) -> pd.DataFrame:
+	"""Fallback forecast for sparse item histories."""
+
+	last_value = float(series.iloc[-1]) if len(series) else 0.0
+	future_index = pd.date_range(series.index[-1] + pd.offsets.MonthBegin(1), periods=periods, freq="MS")
+	frame = pd.DataFrame(
+		{
+			"forecast": [last_value] * periods,
+			"lower_ci": [last_value] * periods,
+			"upper_ci": [last_value] * periods,
+		},
+		index=future_index,
+	)
+	frame.index.name = "Month"
+	return frame
+
+
 def forecast_sales(model_fit: object, periods: int) -> pd.DataFrame:
 	"""Return a forecast table with confidence intervals."""
 
@@ -169,8 +213,76 @@ def build_forecast_table(series: pd.Series, forecast_frame: pd.DataFrame) -> pd.
 	return output
 
 
+def item_metadata(rows: pd.DataFrame) -> tuple[str | None, str | None]:
+	"""Extract stable item labels for reporting."""
+
+	item_code = None
+	item_name = None
+	if "ItmCd" in rows.columns:
+		codes = rows["ItmCd"].dropna().astype(str).unique()
+		if len(codes):
+			item_code = codes[0]
+	if "ItmNm" in rows.columns:
+		names = rows["ItmNm"].dropna().astype(str).unique()
+		if len(names):
+			item_name = names[0]
+	return item_code, item_name
+
+
+def forecast_item(
+	data: pd.DataFrame,
+	item_key: int,
+	periods: int,
+	seasonal_period_override: int | None,
+	trim_trailing_zeros: bool,
+) -> ItemForecast:
+	"""Forecast one item key using SARIMA when enough history exists."""
+
+	item_rows = data.loc[data["ItmKy"] == item_key].copy()
+	item_code, item_name = item_metadata(item_rows)
+	series, trimmed_months, original_series = load_item_sales_series(
+		data,
+		item_key,
+		trim_trailing_zeros=trim_trailing_zeros,
+	)
+	seasonal_period = seasonal_period_for_history(len(series), seasonal_period_override)
+
+	method = "sarima"
+	order: tuple[int, int, int] | None = None
+	seasonal_order: tuple[int, int, int, int] | None = None
+	aic: float | None = None
+
+	use_sarima = len(series) >= 6 and series.ne(0).any()
+	if use_sarima:
+		try:
+			result = fit_best_sarima(series, seasonal_period)
+			forecast_frame = forecast_sales(result.model_fit, periods)
+			order = result.order
+			seasonal_order = result.seasonal_order
+			aic = result.aic
+		except Exception:
+			use_sarima = False
+
+	if not use_sarima:
+		method = "naive"
+		forecast_frame = forecast_naive(original_series if len(original_series) else series, periods)
+
+	output = build_forecast_table(series if len(series) else original_series, forecast_frame)
+	return ItemForecast(
+		item_key=item_key,
+		item_code=item_code,
+		item_name=item_name,
+		method=method,
+		order=order,
+		seasonal_order=seasonal_order,
+		aic=aic,
+		series=series,
+		forecast=output,
+	)
+
+
 def parse_args() -> argparse.Namespace:
-	parser = argparse.ArgumentParser(description="Train a SARIMA sales forecast from an Excel workbook.")
+	parser = argparse.ArgumentParser(description="Train per-item SARIMA forecasts from an Excel workbook.")
 	parser.add_argument(
 		"--excel",
 		type=Path,
@@ -179,6 +291,12 @@ def parse_args() -> argparse.Namespace:
 	)
 	parser.add_argument("--sheet", default=0, help="Excel sheet name or zero-based sheet index.")
 	parser.add_argument("--periods", type=int, default=3, help="Number of future months to forecast.")
+	parser.add_argument(
+		"--item-key",
+		type=int,
+		default=None,
+		help="Forecast a single item key instead of all item keys.",
+	)
 	parser.add_argument(
 		"--seasonal-period",
 		type=int,
@@ -193,10 +311,46 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument(
 		"--output",
 		type=Path,
-		default=Path("sarima_forecast.csv"),
-		help="Optional CSV file to save the forecast table.",
+		default=Path("sarima_item_forecast.csv"),
+		help="CSV file to save the forecast table.",
 	)
 	return parser.parse_args()
+
+
+def forecast_items(
+	data: pd.DataFrame,
+	periods: int,
+	item_key: int | None,
+	seasonal_period_override: int | None,
+	trim_trailing_zeros: bool,
+) -> pd.DataFrame:
+	"""Forecast one or many items and return a combined output table."""
+
+	if item_key is not None:
+		item_keys = [item_key]
+	else:
+		item_keys = sorted(data["ItmKy"].dropna().astype(int).unique().tolist())
+
+	rows: list[pd.DataFrame] = []
+	for key in item_keys:
+		item_result = forecast_item(
+			data,
+			key,
+			periods,
+			seasonal_period_override,
+			trim_trailing_zeros,
+		)
+		frame = item_result.forecast.copy()
+		frame.insert(0, "ItmKy", item_result.item_key)
+		frame.insert(1, "ItmCd", item_result.item_code)
+		frame.insert(2, "ItmNm", item_result.item_name)
+		frame.insert(3, "Method", item_result.method)
+		frame["Order"] = [str(item_result.order)] * len(frame)
+		frame["SeasonalOrder"] = [str(item_result.seasonal_order)] * len(frame)
+		frame["AIC"] = item_result.aic
+		rows.append(frame)
+
+	return pd.concat(rows, ignore_index=True)
 
 
 def main() -> None:
@@ -205,28 +359,27 @@ def main() -> None:
 	args = parse_args()
 	sheet_name: str | int = int(args.sheet) if str(args.sheet).isdigit() else args.sheet
 
-	series, trimmed_months = load_monthly_sales_series(
+	data = load_sales_data(
 		args.excel,
 		sheet_name=sheet_name,
+	)
+	output = forecast_items(
+		data,
+		periods=args.periods,
+		item_key=args.item_key,
+		seasonal_period_override=args.seasonal_period,
 		trim_trailing_zeros=not args.keep_zero_months,
 	)
-	seasonal_period = seasonal_period_for_history(len(series), args.seasonal_period)
-	if trimmed_months:
-		print(f"Trimmed {trimmed_months} trailing zero month(s) before fitting.")
-	if seasonal_period == 0:
-		print("History is too short for seasonal terms; using a non-seasonal ARIMA fallback.")
 
-	result = fit_best_sarima(series, seasonal_period)
-	forecast_frame = forecast_sales(result.model_fit, args.periods)
-	output = build_forecast_table(series, forecast_frame)
-
-	print("Series length:", len(series))
-	print("Date range:", series.index.min().date(), "to", series.index.max().date())
-	print("Best model order:", result.order)
-	print("Best seasonal order:", result.seasonal_order)
-	print("AIC:", round(result.aic, 2))
-	print("\nForecast:")
-	print(output.to_string(index=False, float_format=lambda value: f"{value:,.2f}"))
+	method_counts = output["Method"].value_counts().to_dict()
+	print("Items forecasted:", output["ItmKy"].nunique())
+	print("Forecast rows:", len(output))
+	print("Method counts:", method_counts)
+	print("\nForecast preview:")
+	preview = output if len(output) <= 20 else output.head(20)
+	print(preview.to_string(index=False, float_format=lambda value: f"{value:,.2f}" if isinstance(value, (int, float)) else str(value)))
+	if len(output) > len(preview):
+		print(f"... {len(output) - len(preview)} more row(s) saved to CSV")
 
 	if args.output:
 		output.to_csv(args.output, index=False)

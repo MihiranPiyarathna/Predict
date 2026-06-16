@@ -1,0 +1,3 @@
+ItmKy,ItmCd,ItmNm,Method,Month,forecast,lower_ci,upper_ci,Order,SeasonalOrder,AIC
+31522097,337-2539,NIPITS Liquorice Original,sarima,2025-12-01,895.2997031857552,895.278311681273,895.3210946902375,"(1, 1, 0)","(0, 0, 1, 3)",-1.1972820470110763
+31522097,337-2539,NIPITS Liquorice Original,sarima,2026-01-01,0.0,0.0,0.0,"(1, 1, 0)","(0, 0, 1, 3)",-1.1972820470110763
