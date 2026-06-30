@@ -1,25 +1,7 @@
-DECLARE @RC int
-declare
-	@AdrKy bigint =1, --1317054,	--1317046
-	@LocKy int =1317054,
-	@Dt date=CURRENT_DATE ,
-	@DefNoOfMonths smallint = 12,
-	@CKy int=1237,
-	@ObjKy int=12586,
-	@UsrKy int =28;
+select AdrKy, adrnm from AdrMas where adrNm like '%test%customer%' and cky = '1237'
 
+select AccKy,AccCd,  AccNm from AccMas where AccNm like '%test%customer%' and cky = '1237'
+select AccKy,AccCd,  AccNm from AccMas where AccCd = '100263' and cky = '1237'
 
--- TODO: Set parameter values here.
-
-EXECUTE [dbo].[PAdrKyPOPrediction_SelectWeb] 
-   @AdrKy
-  ,@LocKy
-  ,@Dt
-  ,@DefNoOfMonths
-  ,@CKy
-  ,@ObjKy
-  ,@UsrKy
-GO
-
--- exec sp_helptext '[dbo].[PAdrKyPOPrediction_SelectWeb]';
--- select object_definition(OBJECT_ID('[dbo].[PAdrKyPOPrediction_SelectWeb]'));
+select UsrKy, UsrNm from UsrMas where UsrNm like '%mihiran%'
+select UsrKy, UsrNm from UsrMas where Usrky = 28 -- Admin

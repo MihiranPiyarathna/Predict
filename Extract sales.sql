@@ -1,7 +1,8 @@
 DECLARE 
 @cky int = 1237,
 @DtSt DATE = CURRENT_DATE,
-@DtEnd DATE = '06/01/2025'
+@DtEnd DATE = '01/01/2025'
+-- @DtEnd DATE = '01/01/2026'
 
 CREATE TABLE #Results (
     ItmKy bigint,
@@ -25,5 +26,6 @@ where  (DimDate.Date >= @DTEnd) AND (DimDate.Date <= @DtSt)
 GROUP BY DimDate.Year, DimDate.Month, DimDate.MonthName ,  ItmKy, ItmCd, ItmNm
 
 DROP table #Results;
+
 
 -- 

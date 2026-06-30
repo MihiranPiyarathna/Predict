@@ -43,12 +43,16 @@ class ItemForecast:
 
 def load_sales_data(
 	excel_path: Path,
-	sheet_name: str | int = 0,
+	sheet_name: str = 'Sheet1',
 ) -> pd.DataFrame:
 	"""Load workbook data and validate the expected columns."""
 
-	data = pd.read_excel(excel_path, sheet_name=sheet_name)
+	# debug
+	excel_path = Path('Link3 Sales History Data 29.06.2026_.xlsx')
+	sheet_name = 'Sheet1'
+	#
 
+	data = pd.read_excel(excel_path, sheet_name=sheet_name)
 	required_columns = {"ItmKy", "Year", "Month", "SaleQty"}
 	missing_columns = required_columns.difference(data.columns)
 	if missing_columns:
@@ -286,11 +290,11 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument(
 		"--excel",
 		type=Path,
-		default=Path("sales since 01.06.2025 to 16.06.2026.xlsx"),
+		default=Path('Link3 Sales History Data 29.06.2026_.xlsx'),
 		help="Path to the Excel workbook containing monthly sales data.",
 	)
-	parser.add_argument("--sheet", default=0, help="Excel sheet name or zero-based sheet index.")
-	parser.add_argument("--periods", type=int, default=3, help="Number of future months to forecast.")
+	parser.add_argument("--sheet", default='Sheet1', help="Excel sheet name or zero-based sheet index.")
+	parser.add_argument("--periods", type=int, default=5, help="Number of future months to forecast.")
 	parser.add_argument(
 		"--item-key",
 		type=int,
@@ -326,6 +330,12 @@ def forecast_items(
 ) -> pd.DataFrame:
 	"""Forecast one or many items and return a combined output table."""
 
+	# debug
+	# periods=12 # args.periods
+	# item_key=args.item_key
+	# seasonal_period_override=args.seasonal_period
+	# trim_trailing_zeros=not args.keep_zero_months
+
 	if item_key is not None:
 		item_keys = [item_key]
 	else:
@@ -333,6 +343,8 @@ def forecast_items(
 
 	rows: list[pd.DataFrame] = []
 	for key in item_keys:
+		# key = 106286 # item_keys[-1]
+		# key = item_keys[-1]
 		item_result = forecast_item(
 			data,
 			key,
